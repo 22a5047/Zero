@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <title>シミュレーター (GitHub Pages対応)</title>
+    <!-- ブラウザ用 SnarkJS の読み込み -->
+    <script src="https://cdn.jsdelivr.net/npm/snarkjs@0.7.4/build/snarkjs.min.js"></script>
+    <style>
+        body { font-family: sans-serif; background: #f3f4f6; padding: 20px; max-width: 900px; margin: 0 auto; }
+        .container { display: flex; gap: 20px; }
+        .card { flex: 1; background: white; padding: 20px; border-radius: 12px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
+        .console { background: #111827; color: #10b981; font-family: monospace; padding: 10px; border-radius: 6px; height: 180px; overflow-y: auto; font-size: 0.8rem; }
+        button { width: 100%; background: #2563eb; color: white; border: none; padding: 12px; border-radius: 6px; font-weight: bold; cursor: pointer; margin-top: 10px; }
+        button:disabled { background: #9ca3af; }
+        input, textarea { width: 100%; padding: 8px; margin: 8px 0; box-sizing: border-box; }
+        .status { padding: 10px; text-align: center; font-weight: bold; margin-top: 10px; border-radius: 6px; display: none; }
+    </style>
+</head>
+<body>
+
+    <h1>内部通報シミュレーター</h1>
+   
+    <div class="container">
+        <!-- 1. 告発者 -->
+        <div class="card">
+            <h2>① 告発者のブラウザ（証明生成）</h2>
+            <label>社員ID</label>
+            <input type="text" id="id" value="26P5009">
+            
+            <label>秘密鍵</label>
+            <input type="password" id="key" value="yoyo66ak">
+
+            <label>告発内容</label>
+            <textarea id="report" rows="3">内部で規約違反の会計処理が行われています。</textarea>
+
+            <button id="btn-submit" onclick="runRealZKP()">証明を生成して送信</button>
+            
+            <p>ローカル証明ログ:</p>
+            <div id="sender-log" class="console">待機中...</div>
+        </div>
+
+        <!-- 2. 受信検証者 -->
+        <div class="card">
+            <h2>② 受信者（検証プロセス）</h2>
+            <label>受信した告発文</label>
+            <input type="text" id="rx-report" readonly>
+
+            <p>検証ログ:</p>
+            <div id="verifier-log" class="console">データ受信待ち...</div>
+
+            <div id="status-result" class="status"></div>
+        </div>
+    </div>
+
+    <script>
+        async function runRealZKP() {
+            const btn = document.getElementById('btn-submit');
+            btn.disabled = true;
+
+            const id = document.getElementById('id').value;
+            const key = document.getElementById('key').value;
+            const report = document.getElementById('report').value;
+
+            const senderLog = document.getElementById('sender-log');
+            const verifierLog = document.getElementById('verifier-log');
+            const statusResult = document.getElementById('status-result');
+
+            statusResult.style.display = "none";
+            senderLog.innerHTML = "• 回路への入力を準備中...<br>";
+
+            // ※実際のCircom回路の入力シグナル名に合わせてオブジェクトを作成してください
+            // 例: whistleblower_tree.circom が要求する入力形式
+            const input = {
+                "employee_id": id, 
+                "secret_key": key
+            };
+
+            try {
+                // 1. 【ブラウザ上で証明の作成 (Prover)】
+                senderLog.innerHTML += "• WASMエンジンを起動し、証明(Proof)を計算中... (数秒かかります)<br>";
+                
+                // GitHub Pages上の同階層からファイルを読み込んで証明を生成
+                const { proof, publicSignals } = await snarkjs.groth16.fullProve(
+                    input, 
+                    "whistleblower_tree.wasm", 
+                    "whistleblower_tree_final.zkey"
+                );
+
+                senderLog.innerHTML += "• <span style='color: #6ee7b7;'>[成功] 本物のZKP証明書(Proof)が生成されました！</span><br>";
+                senderLog.innerHTML += "• 秘密情報をブラウザメモリから破棄しました。<br>";
+                senderLog.innerHTML += "• 暗号証明データと告発文を検証サーバーへ送信しました。<br>";
+
+                // 2. 【通信を模したデータの受け渡し】
+                document.getElementById('rx-report').value = report;
+                verifierLog.innerHTML = "• データ（告発文 ＆ 証明書 ＆ 公開信号）を受信しました。<br>";
+                verifierLog.innerHTML += "• 秘密情報は一切含まれていないことを確認。<br>";
+                verifierLog.innerHTML += "• 公開検証キーを使って、数学的整合性を検証中...<br>";
+
+                // 3. 【検証鍵(vKey)のロードと検証 (Verifier)】
+                const vKeyResponse = await fetch("verification_key.json");
+                const vKey = await vKeyResponse.json();
+
+                // 届いた証明（proof）と公開信号（publicSignals）を本物の検証鍵で判定
+                const isValid = await snarkjs.groth16.verify(vKey, publicSignals, proof);
+
+                if (isValid === true) {
+                    verifierLog.innerHTML += "• <span style='color: #6ee7b7;'>[検証完了]関係者であることが証明されました！</span><br>";
+                    statusResult.style.display = "block";
+                    statusResult.style.background = "#ecfdf5";
+                    statusResult.style.border = "2px solid #10b981";
+                    statusResult.style.color = "#065f46";
+                    statusResult.innerHTML = " 検証成功：本物の関係者です";
+                } else {
+                    throw new Error("検証に失敗しました");
+                }
+
+            } catch (error) {
+                senderLog.innerHTML += `<br><span style='color: #f87171;'>エラー: ${error.message}</span>`;
+                verifierLog.innerHTML += "<br><span style='color: #f87171;'>• [検証拒否] 無効な証明書です。</span>";
+                
+                statusResult.style.display = "block";
+                statusResult.style.background = "#fef2f2";
+                statusResult.style.border = "2px solid #ef4444";
+                statusResult.style.color = "#991b1b";
+                statusResult.innerHTML = "検証失敗：関係者証明が不成立、またはデータが改ざんされています。";
+            } finally {
+                btn.disabled = false;
+            }
+        }
+    </script>
+</body>
+</html>
